@@ -1,62 +1,46 @@
-from langchain_chroma import Chroma
-import os
-import google.generativeai as genai
-from langchain_community.document_loaders import PyPDFLoader,DirectoryLoader
-from langchain.text_splitter import RecursiveCharacterTextSplitter
-from dotenv import load_dotenv
-from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain.prompts import PromptTemplate
-from langchain.memory import ConversationBufferWindowMemory
-from langchain.chains import conversational_retrieval
-import pandas as pd
+from langchain_core.runnables import RunnablePassthrough
+from langchain_core.output_parsers import StrOutputParser
+from langchain_google_genai import ChatGoogleGenerativeAI
+from .retreiver import get_retriever
+import os
 
-load_dotenv()
-genai.configure(api_key=os.environ["API_KEY"])
 
-loader = DirectoryLoader('Dataset', glob="./*.pdf", loader_cls=PyPDFLoader)
-documents = loader.load()
+def format_docs(docs):
+    return "\n\n".join(doc.page_content for doc in docs)
 
-text_splitter = RecursiveCharacterTextSplitter(chunk_size=1024, chunk_overlap=200, add_start_index=True)
-texts = text_splitter.split_documents(documents)
+# Define the model
+model = ChatGoogleGenerativeAI(model="gemini-1.5-flash", api_key=os.environ["API_KEY"], temperature=0.2)
 
-print(len(texts[0].page_content))
-embedings = HuggingFaceEmbeddings(model_name="nomic-ai/nomic-embed-text-v1",model_kwargs={"trust_remote_code":True})
-vectorstore = Chroma.from_documents(documents = texts, embedding =  embedings)
-retriever = vectorstore.as_retriever(search_type="similarity", search_kwargs={"k": 6})
+# Define the prompt template
+template = """
+<s>[INST]
+"You are a helpful and informative chatbot that answers questions using text from the reference passage included below. "
+"Respond in a complete sentence and make sure that your response is easy to understand for everyone, elaborate more from your side. "
+"Maintain a friendly and conversational tone. If the passage is irrelevant, feel free to ignore it.\n\n"
+"PASSAGE: '{context}'\n"
+"QUESTION: '{query}'\n"
+"ANSWER:" 
+</s>[INST]
+"""
+QA_CHAIN_PROMPT = PromptTemplate.from_template(template)
 
-def get_retrieved_docs(query):
-    retrieved_docs = retriever.invoke(query)
-    return [doc.page_content for doc in retrieved_docs]
-
-def make_rag_prompt(query, retrieved_passages):
-    retrieved_passage = ' '.join(retrieved_passages),
-    prompt = (
-    f"You are a helpful and informative chatbot that answers questions using text from the reference passage included below. "
-    f"Respond in a complete sentence and make sure that your response is easy to understand for everyone. "
-    f"Maintain a friendly and conversational tone. If the passage is irrelevant, feel free to ignore it.\n\n"
-    f"QUESTION: '{query}'\n"
-    f"PASSAGE: '{retrieved_passage}'\n\n"
-    f"ANSWER:"
+# Create the RAG chain
+def generate_response(query):
+    retriever = get_retriever()
+    rag_chain = (
+        {
+            "context": retriever | format_docs,
+            "query": RunnablePassthrough(),
+        }
+        | QA_CHAIN_PROMPT
+        | model
+        | StrOutputParser()
     )
-    return prompt
+    result = rag_chain.invoke(query)
+    return result
 
-def generate_response(user_prompt):
-    model = genai.GenerativeModel('gemini-flash-1.5')
-    answer = model.generate_content(user_prompt)
-    return answer.text
-    
-def get_response(query):
-    retrieved_passages = get_retrieved_docs(query)
-    user_prompt = make_rag_prompt(query, retrieved_passages)
-    response = generate_response(user_prompt)
-    return response
-
-def generate_answer(query):
-    relevant_text = get_retrieved_docs(query)
-    text = " ".join(relevant_text)
-    prompt = make_rag_prompt(query, retrieved_passages=text)
-    answer = generate_response(prompt)
-    return answer
-
-answer = generate_answer(query = "What is Thakur College of Engineering and Technologys mission and vision?")
-print(answer)
+# Example usage
+query = "Give me details about head of research and development"
+response = generate_response(query)
+print(response)
