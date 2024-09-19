@@ -2,7 +2,7 @@ import scrapy
 
 class MySpider(scrapy.Spider):
     name = 'myspider'
-    start_urls = ['https://tcetmumbai.in/']
+    start_urls = ['https://tcetmumbai.in/*']
 
     def parse(self,response):
         for text in response.css('font'):
