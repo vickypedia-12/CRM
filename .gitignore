@@ -2,5 +2,6 @@ myenv
 .env
 sample.csv
 sample1.csv
-chroma_db
+chroma_db_customer1
+chroma_db_customer2
 __pycache__
