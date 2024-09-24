@@ -1,93 +1,72 @@
-from langchain_chroma import Chroma
-import os
-import google.generativeai as genai
-from langchain_community.document_loaders import PyPDFLoader,DirectoryLoader
-from langchain.text_splitter import RecursiveCharacterTextSplitter
-from dotenv import load_dotenv
-from langchain_community.embeddings import GooglePalmEmbeddings
 from langchain.prompts import PromptTemplate
-from langchain_core.output_parsers import StrOutputParser
 from langchain_core.runnables import RunnablePassthrough
-from langchain_google_vertexai import ChatVertexAI
-from langchain.memory import ConversationBufferWindowMemory
-from langchain.chains import ConversationalRetrievalChain
-import pandas as pd
+from langchain_core.output_parsers import StrOutputParser
+from langchain_google_genai import ChatGoogleGenerativeAI
+from labelLessReteiver import get_retriever
+from dotenv import load_dotenv
+import os
 
 load_dotenv()
-gemini_api_key = genai.configure(api_key=os.environ["API_KEY"])
 
-loader = DirectoryLoader('Dataset', glob="./*.pdf", loader_cls=PyPDFLoader)
-documents = loader.load()
+def format_docs(docs):
+    return "\n\n".join(doc.page_content for doc in docs)
 
-text_splitter = RecursiveCharacterTextSplitter(chunk_size=1024, chunk_overlap=200, add_start_index=True)
-texts = text_splitter.split_documents(documents)
+model = ChatGoogleGenerativeAI(model="gemini-1.5-flash", api_key=os.environ["GOOGLE_API_KEY2"], temperature=0.2)
 
-print(len(texts[0].page_content))
-embedings = GooglePalmEmbeddings()
-vectorstore = Chroma.from_documents(documents = texts, embedding = embedings)
-retriever = vectorstore.as_retriever(search_type="similarity", search_kwargs={"k": 6})
+template = """
+You are a helpful and informative chatbot that answers questions using text from the reference passage included below. 
+Respond in a complete sentence and make sure that your response is easy to understand for everyone, elaborate more from your side. 
+Maintain a friendly and conversational tone. If the passage is irrelevant, feel free to ignore it, please make sure you are right about the information you are providing from the data, and process the complete information before answering the question.
 
-prompt_template = """
-    <s>[INST]f"You are a helpful and informative chatbot that answers questions using text from the reference passage included below. "
-    f"Respond in a complete sentence and make sure that your response is easy to understand for everyone. "
-    f"Maintain a friendly and conversational tone. If the passage is irrelevant, feel free to ignore it.\n\n"
-    f"PASSAGE: '{context}'\n"
-    f"QUESTION: '{query}'\n"
-    f"ANSWER:"'
-    </s>[INST]
+PASSAGE: {context}
+
+CONVERSATION HISTORY:
+{history}
+
+CURRENT QUESTION: {query}
+
+ANSWER:
+
 """
+QA_CHAIN_PROMPT = PromptTemplate.from_template(template)
 
-prompt = PromptTemplate(template=prompt_template,
-     input_variables=['context', 'question'])
+def generate_response(query, history, customer_id):
+    retriever = get_retriever(customer_id)
 
-llm = ChatVertexAI(model="gemini-1.5-flash", project_id= "crm-rag")
+    def _combine_documents(docs):
+        return format_docs(docs)
+    
+    rag_chain = (
+        {
+            "context": lambda x: _combine_documents(retriever.invoke(x["query"])),
+            "query": RunnablePassthrough(),
+            "history": RunnablePassthrough(),
+        }
+        | QA_CHAIN_PROMPT
+        | model
+        | StrOutputParser()
+    )
+    result = rag_chain.invoke(input={"query": query, "history": history})
+    return result
 
-# def format_docs(retriever):
-#     return "\n\n".join(doc.page_content for doc in retriever) 
+def format_history(history):
+    return "\n".join([f"Human: {h['human']}\nAI: {h['ai']}" for h in history])
 
-rag_chain = (
+def chat_loop(customer_id):
+    print(f"Welcome to the RAG Chatbot for Customer {customer_id}! Type 'exit' to end the conversation.")
+    history = []
+    while True:
+        user_input = input("\nYou: ")
+        if user_input.lower() == 'exit':
+            print("Thank you for using the RAG Chatbot. Goodbye!")
+            break
+        formatted_history = format_history(history)
+        response = generate_response(user_input, formatted_history, customer_id)
+        print(f"\nChatbot: {response}")
+        history.append({"human": user_input, "ai": response})
+        if len(history) > 10: 
+            history = history[-10:]
 
-    {"context": retriever | retriever, "question": RunnablePassthrough()}
-    | prompt
-    | llm
-    | StrOutputParser()
-)
-
-result = rag_chain.invoke(query="What is Thakur College of Engineering and Technologys mission and vision?")
-print(result)
-
-
-# def get_retrieved_docs(query):
-#     retrieved_docs = retriever.invoke(query)
-#     return [doc.page_content for doc in retrieved_docs]
-
-
-
-
-# def make_rag_prompt(query, retrieved_passages):
-#     retrieved_passage = ' '.join(retrieved_passages),
-#     prompt = (
-
-#     )
-#     return prompt
-
-# def generate_response(user_prompt):
-#     model = genai.GenerativeModel('gemini-flash-1.5')
-#     answer = model.generate_content(user_prompt)
-#     return answer.text
-
-# def get_response(query):
-#     retrieved_passages = get_retrieved_docs(query)
-#     user_prompt = make_rag_prompt(query, retrieved_passages)
-#     response = generate_response(user_prompt)
-#     return response
-
-# def generate_answer(query):
-#     relevant_text = get_retrieved_docs(query)
-#     text = " ".join(relevant_text)
-#     prompt = make_rag_prompt(query, retrieved_passages=text)
-#     answer = generate_response(prompt)
-#     return answer
-
-# answer = generate_answer(query = "What is Thakur College of Engineering and Technologys mission and vision?")
-# print(answer)
+if __name__ == "__main__":
+    customer_id = input("Enter customer ID: ")
+    chat_loop(customer_id)

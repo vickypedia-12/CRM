@@ -11,7 +11,7 @@ load_dotenv()
 def format_docs(docs):
     return "\n\n".join(doc.page_content for doc in docs)
 
-model = ChatGoogleGenerativeAI(model="gemini-1.5-flash", api_key=os.environ["API_KEY"], temperature=0.2)
+model = ChatGoogleGenerativeAI(model="gemini-1.5-flash", api_key=os.environ["GOOGLE_API_KEY2"], temperature=0.2)
 
 template = """
 You are a helpful and informative chatbot that answers questions using text from the reference passage included below. 
