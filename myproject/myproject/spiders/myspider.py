@@ -5,7 +5,7 @@ from twisted.internet.error import DNSLookupError
 
 class SubdirectorySpider(scrapy.Spider):
     name = "subdir_spider"
-    start_urls = ['https://tiatmumbai.in/']
+    start_urls = []
 
     custom_settings = {
         'DOWNLOAD_DELAY': 1,
@@ -13,7 +13,7 @@ class SubdirectorySpider(scrapy.Spider):
         'FEED_EXPORT_FIELDS': None,
         'RETRY_TIMES': 1,
         'FEED_FORMAT': 'json',
-        'FEED_URI': 'urls2.json',
+        'FEED_URI': 'urls3.json',
         'DUPEFILTER_CLASS': 'scrapy.dupefilters.BaseDupeFilter',
     }
 
@@ -22,7 +22,6 @@ class SubdirectorySpider(scrapy.Spider):
         self.domain = urlparse(self.start_urls[0]).netloc
         self.visited_urls = set()
 
-        
     def parse(self, response):
         if response.status == 200 and 'text/html' in response.headers.get('Content-Type', b'').decode('utf-8'):
             links = response.css('a::attr(href)').getall()
@@ -46,7 +45,6 @@ class SubdirectorySpider(scrapy.Spider):
         else:
             self.logger.info(f"Skipping non-200 or non-HTML content: {response.url}")
 
-            
     def should_yield_url(self, url):
         parsed_url = urlparse(url)
         return parsed_url.path.endswith(('.html','.php','.py','jsp','.asp','/')) and not re.search(r'/(?:page|category|tag)/\d+/?$', parsed_url.path)
@@ -54,13 +52,11 @@ class SubdirectorySpider(scrapy.Spider):
     def should_follow_url(self, path):
         return not re.search(r'\.(jpg|jpeg|png|gif|pdf|doc|docx|xls|xlsx|zip|rar)$', path, re.IGNORECASE)
 
-
     def handle_error(self, failure):
         if failure.check(DNSLookupError):
             self.logger.error(f"DNS lookup failed for {failure.request.url}")
         else:
             self.logger.error(f"Error occurred for {failure.request.url}: {failure.value}")
-
 
     def closed(self, reason):
         self.logger.info(f"Spider closed: {reason}")

@@ -28,14 +28,12 @@ class ContentExtractorSpider(scrapy.Spider):
                 if url:
                     yield scrapy.Request(url, callback=self.parse)
 
-
     def parse(self, response):
         text_content = []
         for selector in ['p', 'div', 'span', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'table', 'li', 'th','td']:
             elements = response.css(f'{selector}::text').getall()
             text_content.extend([text.strip() for text in elements if text.strip()])
 
-        
         combined_text = ' '.join(text_content)
         yield {
             'url': response.url,

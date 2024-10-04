@@ -198,10 +198,47 @@ class RAGChatbotManager:
 
 rag_manager = RAGChatbotManager()
 
+def format_docs(docs):
+    return "\n\n".join(doc.page_content for doc in docs)
+
+model = ChatGoogleGenerativeAI(model="gemini-1.5-flash", api_key=os.environ["GOOGLE_API_KEY2"], temperature=0.2)
+
+template = """
+You are a helpful and informative chatbot that answers questions using text from the reference passage included below. 
+Respond in a complete sentence and make sure that your response is easy to understand for everyone, elaborate more from your side. 
+Maintain a friendly and conversational tone. If the passage is irrelevant, feel free to ignore it, please make sure you are right about the information you are providing from the data, and process the complete information before answering the question.
+
+PASSAGE: {context}
+
+CONVERSATION HISTORY:
+{history}
+
+CURRENT QUESTION: {query}
+
+ANSWER:
+
+"""
+QA_CHAIN_PROMPT = PromptTemplate.from_template(template)
+
+def generate_response(query, history, customer_id):
+    retriever = get_retriever(customer_id)
+
+    def _combine_documents(docs):
+        return format_docs(docs)
+    
+    rag_chain = (
+        {
+            "context": lambda x: _combine_documents(retriever.invoke(x["query"])),
+            "query": RunnablePassthrough(),
+            "history": RunnablePassthrough(),
+        }
+        | QA_CHAIN_PROMPT
+        | model
+        | StrOutputParser()
+    )
+    result = rag_chain.invoke(input={"query": query, "history": history})
+    return result
+
 def get_retriever(customer_id):
     customer_rag = rag_manager.get_customer_rag(customer_id)
     return customer_rag.get_retriever()
-
-if __name__ == "__main__":
-    rag_manager.update_customer_dataset("1", "Dataset_customer1")
-    rag_manager.update_customer_dataset("2", "Dataset_customer2")

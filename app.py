@@ -1,72 +1,148 @@
-from langchain.prompts import PromptTemplate
-from langchain_core.runnables import RunnablePassthrough
-from langchain_core.output_parsers import StrOutputParser
-from langchain_google_genai import ChatGoogleGenerativeAI
-from retreiver import get_retriever, rag_manager
-from dotenv import load_dotenv
+from fastapi import FastAPI, HTTPException, Body, UploadFile, File
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel
+from typing import List, Dict
+from retriever import generate_response, rag_manager
 import os
-
+import shutil
+from dotenv import load_dotenv
+import uvicorn
+import asyncio
+import tempfile
+import json
+from scrapy.crawler import CrawlerProcess
+from scrapy.utils.log import configure_logging
+from scrapy.utils.project import get_project_settings
+from myproject.myproject.spiders.myspider import SubdirectorySpider
+from myproject.myproject.spiders.content_extractor import ContentExtractorSpider
 load_dotenv()
 
-def format_docs(docs):
-    return "\n\n".join(doc.page_content for doc in docs)
+app = FastAPI()
 
-model = ChatGoogleGenerativeAI(model="gemini-1.5-flash", api_key=os.environ["GOOGLE_API_KEY2"], temperature=0.2)
+class ChatMessage(BaseModel):
+    role: str
+    content: str
 
-template = """
-You are a helpful and informative chatbot that answers questions using text from the reference passage included below. 
-Respond in a complete sentence and make sure that your response is easy to understand for everyone, elaborate more from your side. 
-Maintain a friendly and conversational tone. If the passage is irrelevant, feel free to ignore it, please make sure you are right about the information you are providing from the data, and process the complete information before answering the question.
+class ChatRequest(BaseModel):
+    messages: List[ChatMessage]
+    customer_id: str
 
-PASSAGE: {context}
+class ChatResponse(BaseModel):
+    response: str
 
-CONVERSATION HISTORY:
-{history}
-
-CURRENT QUESTION: {query}
-
-ANSWER:
-
-"""
-QA_CHAIN_PROMPT = PromptTemplate.from_template(template)
-
-def generate_response(query, history, customer_id):
-    retriever = get_retriever(customer_id)
-
-    def _combine_documents(docs):
-        return format_docs(docs)
+@app.post("/chat", response_model=ChatResponse)
+async def chat(request: ChatRequest):
+    if not request.messages:
+        raise HTTPException(status_code=400, detail="No messages provided")
     
-    rag_chain = (
-        {
-            "context": lambda x: _combine_documents(retriever.invoke(x["query"])),
-            "query": RunnablePassthrough(),
-            "history": RunnablePassthrough(),
-        }
-        | QA_CHAIN_PROMPT
-        | model
-        | StrOutputParser()
-    )
-    result = rag_chain.invoke(input={"query": query, "history": history})
-    return result
+    history = [{"human": msg.content, "ai": ""} for msg in request.messages[:-1] if msg.role == "user"]
+    for i, msg in enumerate(request.messages[:-1]):
+        if msg.role == "assistant" and i > 0:
+            history[i-1]["ai"] = msg.content
+    
+    query = request.messages[-1].content
+    formatted_history = "\n".join([f"Human: {h['human']}\nAI: {h['ai']}" for h in history])
+    
+    response = generate_response(query, formatted_history, request.customer_id)
+    return ChatResponse(response=response)
 
-def format_history(history):
-    return "\n".join([f"Human: {h['human']}\nAI: {h['ai']}" for h in history])
+@app.post("/upload_document")
+async def upload_document(customer_id: str = Body(...), file: UploadFile = File(...)):
+    try:
+        # Create temporary customer directory if it doesn't exist
+        temp_customer_dir = f"Temp_Dataset_customer{customer_id}"
+        os.makedirs(temp_customer_dir, exist_ok=True)
+        
+        # Save the uploaded file to the temporary directory
+        file_path = os.path.join(temp_customer_dir, file.filename)
+        with open(file_path, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+        
+        return JSONResponse(content={
+            "message": f"File uploaded successfully to temporary directory for customer {customer_id}",
+            "file_name": file.filename
+        }, status_code=200)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
-def chat_loop(customer_id):
-    print(f"Welcome to the RAG Chatbot for Customer {customer_id}! Type 'exit' to end the conversation.")
-    history = []
-    while True:
-        user_input = input("\nYou: ")
-        if user_input.lower() == 'exit':
-            print("Thank you for using the RAG Chatbot. Goodbye!")
-            break
-        formatted_history = format_history(history)
-        response = generate_response(user_input, formatted_history, customer_id)
-        print(f"\nChatbot: {response}")
-        history.append({"human": user_input, "ai": response})
-        if len(history) > 10: 
-            history = history[-10:]
+@app.post("/finish_documents")
+async def finish_documents(customer_id: str = Body(...)):
+    try:
+        temp_customer_dir = f"Temp_Dataset_customer{customer_id}"
+        final_customer_dir = f"Dataset_customer{customer_id}"
+        
+        # Check if temporary directory exists
+        if not os.path.exists(temp_customer_dir):
+            raise HTTPException(status_code=400, detail=f"No temporary documents found for customer {customer_id}")
+        
+        # Move files from temporary to final directory
+        os.makedirs(final_customer_dir, exist_ok=True)
+        for filename in os.listdir(temp_customer_dir):
+            shutil.move(os.path.join(temp_customer_dir, filename), os.path.join(final_customer_dir, filename))
+        
+        # Remove the temporary directory
+        shutil.rmtree(temp_customer_dir)
+        
+        # Update the dataset
+        await update_dataset(customer_id, final_customer_dir)
+        
+        return JSONResponse(content={
+            "message": f"Documents finalized and dataset updated for customer {customer_id}"
+        }, status_code=200)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/update_dataset")
+async def update_dataset(customer_id: str = Body(...), new_directory: str = Body(...)):
+    try:
+        rag_manager.update_customer_dataset(customer_id, new_directory)
+        return {"message": f"Dataset updated successfully for customer {customer_id}"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+        
+async def run_spider(spider, spider_kwargs=None):
+    spider_kwargs = spider_kwargs or {}
+    configure_logging()  
+    
+    process = CrawlerProcess(get_project_settings())
+    
+    process.crawl(spider, **spider_kwargs)
+    process.start()
+
+    return {"message": "Spider completed successfully"}
+
+async def run_subdirectory_spider(start_url: str):
+    try:
+        spider_kwargs = {"start_urls": [start_url]}
+        result = await run_spider(SubdirectorySpider, spider_kwargs)
+        return JSONResponse(content=result, status_code=200)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+async def run_content_extractor_spider():
+    try:
+        result = await run_spider(ContentExtractorSpider)
+        return JSONResponse(content=result, status_code=200)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    
+@app.post("/run_full_scrape_workflow")
+async def run_full_scrape_workflow(start_url: str):
+    try:
+    
+        await run_subdirectory_spider(start_url)
+        
+        if os.path.exists('urls3.json'):
+            os.rename('urls3.json', 'urls.json')
+        else:
+            raise HTTPException(status_code=500, detail="urls3.json not found after running subdirectory spider")
+        
+        await run_content_extractor_spider()
+        
+        return JSONResponse(content={"message": "Full scrape workflow completed successfully"}, status_code=200)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
-    customer_id = input("Enter customer ID: ")
-    chat_loop(customer_id)
+    
+    uvicorn.run(app, host="0.0.0.0", port=8000)

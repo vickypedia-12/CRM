@@ -4,8 +4,10 @@ sample.csv
 sample1.csv
 chroma_db_customer1
 chroma_db_customer2
+chroma_db_customer3
 __pycache__
 label_less_chroma_db_customer1
 label_less_chroma_db_customer2
 Dataset_customer1
 Dataset_customer2
+Dataset_customer3
